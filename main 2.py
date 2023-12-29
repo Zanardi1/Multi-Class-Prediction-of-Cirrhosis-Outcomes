@@ -2,8 +2,12 @@
 
 import numpy as np
 import pandas as pd
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline
+from imblearn.under_sampling import RandomUnderSampler
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import RepeatedStratifiedKFold, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OrdinalEncoder
 
 
@@ -52,12 +56,22 @@ print(raw_data.info())
 X = raw_data.drop(columns=['Status'])
 y = raw_data['Status']
 
-gbc = GradientBoostingClassifier()
-cv = cross_val_score(estimator=gbc, X=X, y=y, cv=20, scoring='neg_log_loss')
-print(sum(cv) / len(cv))
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33)
 
-gbc.fit(X=X, y=y)
-y_pred = gbc.predict_proba(test_data)
+gbc = GradientBoostingClassifier()
+over = SMOTE()
+under = RandomUnderSampler()
+steps = [('over', over), ('under', under), ('model', gbc)]
+pipeline = Pipeline(steps=steps)
+cv = RepeatedStratifiedKFold(n_splits=10, n_repeats=3, random_state=1)
+
+scores = cross_val_score(estimator=pipeline, X=X, y=y, cv=cv, scoring='neg_log_loss')
+print(sum(scores) / len(scores))
+
+# gbc.fit(X=X, y=y)
+pipeline.fit(X=X, y=y)
+y_pred = pipeline.predict_proba(X=test_data)
+# y_pred = gbc.predict_proba(test_data)
 y_pred = pd.DataFrame(data=y_pred, columns=sample.columns, index=test_data.index)
 y_pred.to_csv('Submission.csv')
 print(y_pred)
