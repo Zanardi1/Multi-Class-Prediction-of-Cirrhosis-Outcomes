@@ -1,37 +1,37 @@
 # https://www.kaggle.com/competitions/playground-series-s3e26/discussion/459860
 
+import lightgbm as lgbm
 import numpy as np
 import pandas as pd
-from imblearn.over_sampling import SMOTE
-from imblearn.pipeline import Pipeline
-from imblearn.under_sampling import RandomUnderSampler
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.model_selection import RepeatedStratifiedKFold, cross_val_score
+from sklearn.model_selection import cross_val_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OrdinalEncoder
 
 
 def feature_engineering(df):
-    threshold_platelets = 150
-    df['thrombocytopenia'] = np.where(df['Platelets'] < threshold_platelets, 1, 0)
+    numerical_columns = [col for col in df.columns if df[col].dtype in ['int64', 'float64'] and col != 'id']
+    bins = [0, 30, 60, 100]
+    labels = ['Young', 'Middle-aged', 'Elderly']
+    df['Age group'] = pd.cut(df['Age'], bins=bins, labels=labels, right=False)
+    df['Bilirubin normal'] = ((df['Bilirubin'] < 1.2) & (df['Age'] >= 18)) | ((df['Bilirubin'] < 1) & (df['Age'] < 18))
+    df['Cholesterol Level'] = pd.cut(df['Cholesterol'], bins=[-float('inf'), 200, 239, float('inf')],
+                                     labels=['0', '1', '2'])
+    df['Albumin level'] = np.where(df['Albumin'] < 3.4, 1, np.where(df['Albumin'] > 5.4, 2, 0))
+    df['Copper risk'] = np.where(df['Copper'] > 140, 1, 0)
+    df['Alk Phos Normal'] = np.where((df['Alk_Phos'] >= 44) & (df['Alk_Phos'] <= 147), 0, 1)
+    df['SGOT Normal'] = np.where((df['SGOT'] >= 8) & (df['SGOT'] <= 45), 0, 1)
+    df['Triglycerides Level'] = pd.cut(df['Tryglicerides'], bins=[-float('inf'), 150, 199, 499, float('inf')],
+                                       labels=['0', '1', '2', '3'])
+    df['Platelets Normal'] = np.where((df['Platelets'] > 150000) & (df['Platelets'] <= 450000), 0, 1)
+    df['Prothrombin Normal'] = np.where((df['Prothrombin'] >= 11) & (df['Prothrombin'] <= 13.5), 0, 1)
+    for col in numerical_columns:
+        df[f'{col}_squared'] = df[col] ** 2
+    return df
 
-    threshold_alk_phos_upper = 147
-    threshold_alk_phos_lower = 44
-    df['elevated_alk_phos'] = np.where(
-        (df['Alk_Phos'] > threshold_alk_phos_upper) | (df['Alk_Phos'] < threshold_alk_phos_lower), 1, 0)
 
-    normal_copper_range = (62, 140)
-    df['normal_copper'] = np.where((df['Copper'] >= normal_copper_range[0]) & (df['Copper'] <= normal_copper_range[1]),
-                                   1, 0)
-
-    normal_albumin_range = (3.4, 5.4)
-    df['normal_albumin'] = np.where(
-        (df['Albumin'] >= normal_albumin_range[0]) & (df['Albumin'] < normal_albumin_range[1]), 1, 0)
-
-    normal_bilirubin_range = (0.2, 1.2)
-    df['normal_bilirubin'] = np.where(
-        (df['Bilirubin'] >= normal_bilirubin_range[0]) & (df['Bilirubin'] <= normal_bilirubin_range[1]), 1, 0)
-
+lgb_params = {'max_depth': 15, 'min_child_samples': 13, 'learning_rate': 0.05285597081335651, 'n_estimators': 294,
+              'min_child_weight': 5, 'colsample_bytree': 0.10012816493265511, 'reg_alpha': 0.8767668608061822,
+              'reg_lambda': 0.8705834466355764}
 
 raw_data = pd.read_csv('train.csv', index_col=0)
 test_data = pd.read_csv('test.csv', index_col=0)
@@ -46,32 +46,22 @@ raw_data[categorical_columns] = oe.fit_transform(raw_data[categorical_columns])
 categorical_columns = categorical_columns.drop(labels=['Status'])
 test_data[categorical_columns] = oe.fit_transform(test_data[categorical_columns])
 
-feature_engineering(raw_data)
-feature_engineering(test_data)
-
-print(raw_data.head().to_string())
-print(raw_data.describe().to_string())
-print(raw_data.info())
-
 X = raw_data.drop(columns=['Status'])
 y = raw_data['Status']
 
+X = feature_engineering(X)
+test_data = feature_engineering(test_data)
+
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33)
 
-gbc = GradientBoostingClassifier()
-over = SMOTE()
-under = RandomUnderSampler()
-steps = [('over', over), ('under', under), ('model', gbc)]
-pipeline = Pipeline(steps=steps)
-cv = RepeatedStratifiedKFold(n_splits=10, n_repeats=3, random_state=1)
+lgb = lgbm.LGBMClassifier(**lgb_params)
+early_stopping_callback = lgbm.early_stopping(100, first_metric_only=True, verbose=False)
 
-scores = cross_val_score(estimator=pipeline, X=X, y=y, cv=cv, scoring='neg_log_loss')
+scores = cross_val_score(estimator=lgb, X=X_train, y=y_train, cv=10, scoring='neg_log_loss')
 print(sum(scores) / len(scores))
 
-# gbc.fit(X=X, y=y)
-pipeline.fit(X=X, y=y)
-y_pred = pipeline.predict_proba(X=test_data)
-# y_pred = gbc.predict_proba(test_data)
+lgb.fit(X=X_train, y=y_train, eval_set=[(X_test, y_test)], eval_metric='multi_logloss')
+y_pred = lgb.predict_proba(test_data)
 y_pred = pd.DataFrame(data=y_pred, columns=sample.columns, index=test_data.index)
 y_pred.to_csv('Submission.csv')
 print(y_pred)
